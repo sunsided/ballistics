@@ -37,6 +37,10 @@ impl Projectile {
         }
     }
 
+    pub fn velocity(&self) -> f32 {
+        self.velocity.length()
+    }
+
     pub fn step(&mut self, duration: Duration, gravity: Vec2) {
         let duration = duration.as_secs_f32();
         self.position += self.velocity * duration + 0.5 * self.acceleration * duration.powi(2);

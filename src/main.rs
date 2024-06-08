@@ -214,10 +214,17 @@ impl event::EventHandler<GameError> for MainState {
                 projectile.position.x, projectile.position.y
             ));
             text.set_font("LiberationMono").set_scale(12.);
+            let text_dims_pos = text.dimensions(ctx).unwrap();
+            let dest_point = Vec2::new(self.window_size.width as f32 - text_dims_pos.w - 10.0, 10.);
+            canvas.draw(&text, dest_point);
 
+            let mut text = graphics::Text::new(format!("{:.2} m/s²", projectile.velocity()));
+            text.set_font("LiberationMono").set_scale(12.);
             let text_dims = text.dimensions(ctx).unwrap();
-            let dest_point = Vec2::new(self.window_size.width as f32 - text_dims.w - 10.0, 10.);
-
+            let dest_point = Vec2::new(
+                self.window_size.width as f32 - text_dims.w - 10.0,
+                10. + text_dims_pos.y + text_dims_pos.h + 2.,
+            );
             canvas.draw(&text, dest_point);
         }
 
