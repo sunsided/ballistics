@@ -1,22 +1,24 @@
 use ggez::glam::*;
 use ggez::graphics::{self, Canvas, Color, Rect};
-use ggez::input::keyboard::KeyCode;
 use ggez::winit::dpi::PhysicalSize;
-use ggez::{event, GameError};
+use ggez::{event, timer, GameError};
 use ggez::{Context, GameResult};
 use rand::Rng;
 use std::time::Duration;
 use std::{env, path};
+
+const PHYSICS_FPS: u32 = 60;
 
 struct MainState {
     window_size: PhysicalSize<u32>,
     floor_height: f32,
     opponent_position: Vec2,
     projectile: Option<Projectile>,
+    projectile_trajectory: Option<Vec<Vec2>>,
     gravity: Vec2,
-    simulation_time_scale: f32,
 }
 
+#[derive(Clone)]
 struct Projectile {
     position: Vec2,
     velocity: Vec2,
@@ -51,11 +53,47 @@ impl Projectile {
         }
     }
 
-    pub fn step(&mut self, duration: Duration, gravity: Vec2, time_scale: f32) {
-        let duration = duration.as_secs_f32() * time_scale;
+    pub fn step(&mut self, duration: Duration, gravity: Vec2) {
+        let duration = duration.as_secs_f32();
         self.position += self.velocity * duration + 0.5 * self.acceleration * duration.powi(2);
         self.velocity += self.acceleration * duration;
         self.acceleration = gravity;
+    }
+
+    pub fn simulate(
+        &self,
+        gravity: Vec2,
+        delta_time: Duration,
+        sample_every: Duration,
+    ) -> ProjectileSimulator {
+        ProjectileSimulator {
+            projectile: self.clone(),
+            gravity,
+            delta_time,
+            last_sample: Duration::default(),
+            sample_every,
+        }
+    }
+}
+
+struct ProjectileSimulator {
+    projectile: Projectile,
+    gravity: Vec2,
+    delta_time: Duration,
+    last_sample: Duration,
+    sample_every: Duration,
+}
+
+impl Iterator for ProjectileSimulator {
+    type Item = Vec2;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        while self.last_sample < self.sample_every {
+            self.projectile.step(self.delta_time, self.gravity);
+            self.last_sample += self.delta_time;
+        }
+        self.last_sample -= self.sample_every;
+        Some(self.projectile.position)
     }
 }
 
@@ -71,8 +109,8 @@ impl MainState {
             floor_height: 100.0,
             opponent_position: Vec2::default(),
             projectile: None,
+            projectile_trajectory: None,
             gravity: Vec2::new(0.0, 9.81),
-            simulation_time_scale: 5.0,
         };
         Ok(s)
     }
@@ -120,12 +158,41 @@ impl MainState {
 
         Ok(())
     }
+
+    fn render_projectile_trajectory(
+        &self,
+        ctx: &mut Context,
+        canvas: &mut Canvas,
+    ) -> Result<(), GameError> {
+        if let Some(trajectory) = &self.projectile_trajectory {
+            let circle = graphics::Mesh::new_circle(
+                ctx,
+                graphics::DrawMode::fill(),
+                Vec2::default(),
+                1.0,
+                0.2,
+                Color::new(1.0, 0.0, 0.0, 0.25),
+            )?;
+
+            for &pos in trajectory {
+                canvas.draw(&circle, pos);
+            }
+        }
+
+        Ok(())
+    }
+
+    fn projectile_in_bounds(&self, projectile: Vec2, radius: f32) -> bool {
+        !(projectile.x <= radius
+            || projectile.y <= radius
+            || projectile.y > (self.window_size.height as f32 - self.floor_height + radius))
+    }
 }
 
 impl event::EventHandler<GameError> for MainState {
     fn update(&mut self, ctx: &mut Context) -> GameResult {
-        if ctx.keyboard.is_key_pressed(KeyCode::Return) {
-            ctx.request_quit();
+        if !ctx.time.check_update_time((PHYSICS_FPS as f32) as u32) {
+            timer::yield_now();
             return Ok(());
         }
 
@@ -136,18 +203,30 @@ impl event::EventHandler<GameError> for MainState {
 
         // Update the projectile.
         if let Some(projectile) = self.projectile.as_mut() {
-            projectile.step(ctx.time.delta(), self.gravity, self.simulation_time_scale);
-
-            // If the projectile leaves the bounds or hits the ground, destroy and restart.
-            if projectile.position.x <= projectile.radius
-                || projectile.position.y <= projectile.radius
-                || projectile.position.y
-                    > (self.window_size.height as f32 - self.floor_height + projectile.radius)
-            {
-                self.projectile = None;
-            }
+            let time_delta = Duration::from_secs_f32((PHYSICS_FPS as f32).recip());
+            projectile.step(time_delta, self.gravity);
         } else {
-            self.projectile = Some(Projectile::fire_from(self.opponent_position));
+            let projectile = Projectile::fire_from(self.opponent_position);
+
+            let trajectory: Vec<_> = projectile
+                .simulate(
+                    self.gravity,
+                    Duration::from_secs_f32((PHYSICS_FPS as f32).recip()),
+                    Duration::from_secs_f32(0.1),
+                )
+                .take_while(|&pos| self.projectile_in_bounds(pos, 0.0))
+                .collect();
+
+            self.projectile = Some(projectile);
+            self.projectile_trajectory = Some(trajectory);
+        }
+
+        // Reset the projectile if out of bounds.
+        if let Some(projectile) = &self.projectile {
+            if !self.projectile_in_bounds(projectile.position, projectile.radius) {
+                self.projectile = None;
+                self.projectile_trajectory = None;
+            }
         }
 
         Ok(())
@@ -166,6 +245,7 @@ impl event::EventHandler<GameError> for MainState {
         );
 
         self.render_floor(ctx, &mut canvas)?;
+        self.render_projectile_trajectory(ctx, &mut canvas)?;
         self.render_projectile(ctx, &mut canvas)?;
         self.render_opponent(ctx, &mut canvas)?;
 
