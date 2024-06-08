@@ -1,5 +1,6 @@
 use ggez::glam::Vec2;
 use rand::Rng;
+use std::f32::consts::PI;
 use std::time::Duration;
 
 #[derive(Clone)]
@@ -23,15 +24,18 @@ impl Default for Projectile {
 
 impl Projectile {
     pub fn fire_from(position: Vec2) -> Self {
-        // TODO: Convert from cartesian to polar, angle and force
-
         let mut rng = rand::thread_rng();
-        let random_x: f32 = rng.gen_range(-10.0..=10.0);
-        let random_y: f32 = rng.gen_range(-10.0..=30.0);
+        let angle_deg: f32 = rng.gen_range(45.0..=80.0);
+        let angle_rad = angle_deg * PI / 180.0;
+        let magnitude: f32 = rng.gen_range(50.0..=150.0);
+
+        let (sin, cos) = angle_rad.sin_cos();
+        let velocity_x = -magnitude * cos;
+        let velocity_y = magnitude * sin;
 
         Self {
             position,
-            velocity: Vec2::new(-60.0 + random_x, 80.0 + random_y),
+            velocity: Vec2::new(velocity_x, velocity_y),
             acceleration: Vec2::new(0.0, 0.0),
             ..Default::default()
         }
