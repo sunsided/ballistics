@@ -2,7 +2,7 @@ mod projectile;
 
 use crate::projectile::Projectile;
 use ggez::glam::*;
-use ggez::graphics::{self, Canvas, Color, Rect};
+use ggez::graphics::{self, Canvas, Color, Drawable, Rect};
 use ggez::winit::dpi::PhysicalSize;
 use ggez::{event, timer, GameError};
 use ggez::{Context, GameResult};
@@ -206,6 +206,20 @@ impl event::EventHandler<GameError> for MainState {
                 .set_scale(12.),
             dest_point,
         );
+
+        // Position at top-right
+        if let Some(projectile) = &self.projectile {
+            let mut text = graphics::Text::new(format!(
+                "{:.2}, {:.2}",
+                projectile.position.x, projectile.position.y
+            ));
+            text.set_font("LiberationMono").set_scale(12.);
+
+            let text_dims = text.dimensions(ctx).unwrap();
+            let dest_point = Vec2::new(self.window_size.width as f32 - text_dims.w - 10.0, 10.);
+
+            canvas.draw(&text, dest_point);
+        }
 
         self.render_floor(ctx, &mut canvas)?;
         self.render_projectile_trajectory(ctx, &mut canvas)?;
