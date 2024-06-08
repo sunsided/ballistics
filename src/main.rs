@@ -6,7 +6,6 @@ use ggez::graphics::{self, Canvas, Color, Rect};
 use ggez::winit::dpi::PhysicalSize;
 use ggez::{event, timer, GameError};
 use ggez::{Context, GameResult};
-use rand::Rng;
 use std::time::Duration;
 use std::{env, path};
 
@@ -14,13 +13,15 @@ const PHYSICS_FPS: u32 = 60;
 
 struct MainState {
     window_size: PhysicalSize<u32>,
-    floor_height: f32,
+    /// The opponent's position in the physical world.
     opponent_position: Vec2,
     projectile: Option<Projectile>,
     projectile_trajectory: Option<Vec<Vec2>>,
     gravity: Vec2,
     world_size: Vec2,
     world_to_screen: Mat3,
+    screen_offset: Vec2,
+    screen_scale: Vec2,
 }
 
 impl MainState {
@@ -32,29 +33,36 @@ impl MainState {
 
         let s = MainState {
             window_size: ctx.gfx.window().inner_size(),
-            floor_height: 100.0,
             opponent_position: Vec2::default(),
             projectile: None,
             projectile_trajectory: None,
-            gravity: Vec2::new(0.0, 9.81),
-            world_size: Vec2::new(1000.0, 1000.0),
+            gravity: Vec2::new(0.0, -9.81),
+            world_size: Vec2::new(2000.0, 2000.0),
             world_to_screen: Mat3::default(),
+            screen_offset: Vec2::new(0.0, -100.0),
+            screen_scale: Vec2::new(1.0, 1.0),
         };
         Ok(s)
+    }
+
+    fn floor_height(&self) -> f32 {
+        -self.screen_offset.y
     }
 
     fn create_transformation_matrix(&self) -> Mat3 {
         let screen_width = self.window_size.width as f32;
         let screen_height = self.window_size.height as f32;
 
-        let scale_x = screen_width / self.world_size.x;
-        let scale_y = screen_height / self.world_size.y;
+        let scale_x = screen_width / self.world_size.x * self.screen_scale.x;
+        let scale_y = screen_height / self.world_size.y * self.screen_scale.y;
 
-        // Create a scaling matrix with y-axis flipped
+        // Create a scaling matrix with y-axis flipped and additional scale
         let scale_matrix = Mat3::from_scale(Vec2::new(scale_x, -scale_y));
 
-        // Create a translation matrix to move the origin to the bottom-left corner of the screen
-        let translation_matrix = Mat3::from_translation(Vec2::new(0.0, screen_height));
+        // Create a translation matrix to move the origin to the specified screen offset
+        let translation_matrix = Mat3::from_translation(
+            self.screen_offset + Vec2::new(0.0, screen_height * self.screen_scale.y),
+        );
 
         // Combine the matrices (scaling first, then translation)
         translation_matrix * scale_matrix
@@ -65,12 +73,12 @@ impl MainState {
         let circle = graphics::Mesh::new_rectangle(
             ctx,
             graphics::DrawMode::fill(),
-            Rect::new(0.0, 0.0, window_size.width as f32, self.floor_height),
+            Rect::new(0.0, 0.0, window_size.width as f32, self.floor_height()),
             Color::WHITE,
         )?;
         canvas.draw(
             &circle,
-            Vec2::new(0.0, window_size.height as f32 - self.floor_height),
+            Vec2::new(0.0, window_size.height as f32 - self.floor_height()),
         );
         Ok(())
     }
@@ -84,7 +92,11 @@ impl MainState {
             0.2,
             Color::WHITE,
         )?;
-        canvas.draw(&circle, self.opponent_position);
+
+        let pos = self
+            .world_to_screen
+            .transform_point2(self.opponent_position);
+        canvas.draw(&circle, pos);
         Ok(())
     }
 
@@ -98,7 +110,9 @@ impl MainState {
                 0.2,
                 Color::RED,
             )?;
-            canvas.draw(&circle, projectile.position);
+
+            let pos = self.world_to_screen.transform_point2(projectile.position);
+            canvas.draw(&circle, pos);
         }
 
         Ok(())
@@ -120,6 +134,7 @@ impl MainState {
             )?;
 
             for &pos in trajectory {
+                let pos = self.world_to_screen.transform_point2(pos);
                 canvas.draw(&circle, pos);
             }
         }
@@ -128,9 +143,11 @@ impl MainState {
     }
 
     fn projectile_in_bounds(&self, projectile: Vec2, radius: f32) -> bool {
-        !(projectile.x <= radius
-            || projectile.y <= radius
-            || projectile.y > (self.window_size.height as f32 - self.floor_height + radius))
+        let pos = self.world_to_screen.transform_point2(projectile);
+
+        !(pos.x <= radius
+            || pos.y <= radius
+            || pos.y > (self.window_size.height as f32 - self.floor_height() + radius))
     }
 
     fn update_transformations(&mut self) {
@@ -145,14 +162,7 @@ impl event::EventHandler<GameError> for MainState {
             return Ok(());
         }
 
-        let lol = self.world_to_screen * Vec3::default();
-        let lol2 = self.world_to_screen * Vec3::new(0.0, 100.0, 0.0);
-        let lol23 = self.world_to_screen * Vec3::new(100.0, 100.0, 0.0);
-
-        self.opponent_position = Vec2::new(
-            (self.window_size.width as f32) * 0.9,
-            self.window_size.height as f32 - self.floor_height,
-        );
+        self.opponent_position = Vec2::new(self.world_size.x * 0.9, 0.0);
 
         // Update the projectile.
         if let Some(projectile) = self.projectile.as_mut() {
@@ -241,13 +251,14 @@ mod test {
     fn equal_scaling_works() {
         let mut s = MainState {
             window_size: PhysicalSize::new(640, 480),
-            floor_height: 100.0,
             opponent_position: Vec2::default(),
             projectile: None,
             projectile_trajectory: None,
             gravity: Vec2::new(0.0, 9.81),
             world_size: Vec2::new(640.0, 480.0),
             world_to_screen: Mat3::default(),
+            screen_offset: Vec2::default(),
+            screen_scale: Vec2::ONE,
         };
 
         s.update_transformations();
@@ -265,13 +276,14 @@ mod test {
     fn different_scaling_works() {
         let mut s = MainState {
             window_size: PhysicalSize::new(640, 480),
-            floor_height: 100.0,
             opponent_position: Vec2::default(),
             projectile: None,
             projectile_trajectory: None,
             gravity: Vec2::new(0.0, 9.81),
             world_size: Vec2::new(640.0 * 2.0, 480.0 * 2.0), // twice the size of the screen
             world_to_screen: Mat3::default(),
+            screen_offset: Vec2::new(1000.0, 2000.0),
+            screen_scale: Vec2::ONE,
         };
 
         s.update_transformations();
@@ -280,8 +292,14 @@ mod test {
         let top_of_bottom_left = s.world_to_screen.transform_point2(Vec2::new(0.0, 100.0));
         let top_right_of_bottom_left = s.world_to_screen.transform_point2(Vec2::new(100.0, 100.));
 
-        assert_eq!(bottom_left, Vec2::new(0.0, 480.0));
-        assert_eq!(top_of_bottom_left, Vec2::new(0.0, 480.0 - 50.0));
-        assert_eq!(top_right_of_bottom_left, Vec2::new(50.0, 480.0 - 50.0));
+        assert_eq!(bottom_left, Vec2::new(1000.0 + 0.0, 2000.0 + 480.0));
+        assert_eq!(
+            top_of_bottom_left,
+            Vec2::new(1000.0 + 0.0, 2000.0 + 480.0 - 50.0)
+        );
+        assert_eq!(
+            top_right_of_bottom_left,
+            Vec2::new(1000.0 + 50.0, 2000.0 + 480.0 - 50.0)
+        );
     }
 }
