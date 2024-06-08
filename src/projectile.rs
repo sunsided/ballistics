@@ -1,7 +1,10 @@
 use ggez::glam::Vec2;
 use rand::Rng;
+use rand_distr::{Distribution, Normal};
 use std::f32::consts::PI;
 use std::time::Duration;
+
+const DEG_TO_RAD: f32 = PI / 180.0;
 
 #[derive(Clone)]
 pub struct Projectile {
@@ -25,11 +28,15 @@ impl Default for Projectile {
 impl Projectile {
     pub fn fire_from(position: Vec2) -> Self {
         let mut rng = rand::thread_rng();
-        let angle_deg: f32 = rng.gen_range(45.0..=80.0);
-        let angle_rad = angle_deg * PI / 180.0;
-        let magnitude: f32 = rng.gen_range(50.0..=150.0);
 
+        let normal = Normal::new(60.0, 10.0).unwrap();
+        let angle_deg: f32 = normal.sample(&mut rng);
+        let angle_deg = angle_deg.clamp(25.0, 80.0);
+        let angle_rad = angle_deg * DEG_TO_RAD;
         let (sin, cos) = angle_rad.sin_cos();
+
+        let magnitude: f32 = rng.gen_range(100.0..=120.0);
+
         let velocity_x = -magnitude * cos;
         let velocity_y = magnitude * sin;
 

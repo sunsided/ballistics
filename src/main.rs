@@ -131,7 +131,7 @@ impl MainState {
                 Vec2::default(),
                 1.0,
                 0.2,
-                Color::new(1.0, 0.0, 0.0, 0.25),
+                Color::new(1.0, 0.0, 0.0, 0.125),
             )?;
 
             for &pos in trajectory {
