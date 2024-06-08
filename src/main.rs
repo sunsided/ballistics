@@ -4,12 +4,13 @@ use crate::projectile::Projectile;
 use ggez::glam::*;
 use ggez::graphics::{self, Canvas, Color, Drawable, Rect};
 use ggez::winit::dpi::PhysicalSize;
-use ggez::{event, timer, GameError};
+use ggez::{conf, event, GameError};
 use ggez::{Context, GameResult};
 use std::time::Duration;
 use std::{env, path};
 
 const PHYSICS_FPS: u32 = 60;
+pub(crate) const GAME_TIME_FACTOR: f32 = 10.0;
 
 struct MainState {
     window_size: PhysicalSize<u32>,
@@ -157,38 +158,37 @@ impl MainState {
 
 impl event::EventHandler<GameError> for MainState {
     fn update(&mut self, ctx: &mut Context) -> GameResult {
-        if !ctx.time.check_update_time((PHYSICS_FPS as f32) as u32) {
-            timer::yield_now();
-            return Ok(());
-        }
+        while ctx.time.check_update_time((PHYSICS_FPS as f32) as u32) {
+            let time_delta =
+                Duration::from_secs_f32((PHYSICS_FPS as f32).recip() * GAME_TIME_FACTOR);
 
-        self.opponent_position = Vec2::new(self.world_size.x * 0.9, 0.0);
+            self.opponent_position = Vec2::new(self.world_size.x * 0.9, 0.0);
 
-        // Update the projectile.
-        if let Some(projectile) = self.projectile.as_mut() {
-            let time_delta = Duration::from_secs_f32((PHYSICS_FPS as f32).recip());
-            projectile.step(time_delta, self.gravity);
-        } else {
-            let projectile = Projectile::fire_from(self.opponent_position);
+            // Update the projectile.
+            if let Some(projectile) = self.projectile.as_mut() {
+                projectile.step(time_delta, self.gravity);
+            } else {
+                let projectile = Projectile::fire_from(self.opponent_position);
 
-            let trajectory: Vec<_> = projectile
-                .simulate(
-                    self.gravity,
-                    Duration::from_secs_f32((PHYSICS_FPS as f32).recip()),
-                    Duration::from_secs_f32(0.1),
-                )
-                .take_while(|&pos| self.projectile_in_bounds(pos, 0.0))
-                .collect();
+                let trajectory: Vec<_> = projectile
+                    .simulate(
+                        self.gravity,
+                        Duration::from_secs_f32((PHYSICS_FPS as f32).recip() * GAME_TIME_FACTOR),
+                        Duration::from_secs_f32(0.1),
+                    )
+                    .take_while(|&pos| self.projectile_in_bounds(pos, 0.0))
+                    .collect();
 
-            self.projectile = Some(projectile);
-            self.projectile_trajectory = Some(trajectory);
-        }
+                self.projectile = Some(projectile);
+                self.projectile_trajectory = Some(trajectory);
+            }
 
-        // Reset the projectile if out of bounds.
-        if let Some(projectile) = &self.projectile {
-            if !self.projectile_in_bounds(projectile.position, projectile.radius) {
-                self.projectile = None;
-                self.projectile_trajectory = None;
+            // Reset the projectile if out of bounds.
+            if let Some(projectile) = &self.projectile {
+                if !self.projectile_in_bounds(projectile.position, projectile.radius) {
+                    self.projectile = None;
+                    self.projectile_trajectory = None;
+                }
             }
         }
 
@@ -258,7 +258,10 @@ pub fn main() -> GameResult {
         path::PathBuf::from("./resources")
     };
 
-    let cb = ggez::ContextBuilder::new("super_simple", "ggez").add_resource_path(resource_dir);
+    let cb = ggez::ContextBuilder::new("projectile_estimation", "me")
+        .window_setup(conf::WindowSetup::default().title("Projectile Estimation"))
+        .window_mode(conf::WindowMode::default().dimensions(640.0, 480.0))
+        .add_resource_path(resource_dir);
     let (mut ctx, event_loop) = cb.build()?;
     let state = MainState::new(&mut ctx)?;
     event::run(ctx, event_loop, state)

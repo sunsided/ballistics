@@ -31,7 +31,7 @@ impl Projectile {
 
         Self {
             position,
-            velocity: Vec2::new(-60.0 + random_x, 160.0 + random_y),
+            velocity: Vec2::new(-60.0 + random_x, 80.0 + random_y),
             acceleration: Vec2::new(0.0, 0.0),
             ..Default::default()
         }
