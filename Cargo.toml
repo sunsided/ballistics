@@ -1,7 +1,12 @@
 [package]
 name = "ballistics"
 version = "0.1.0"
-edition = "2021"
+description = "A Kalman filter ballistic curve estimation playground"
+edition = "2024"
+license = "EUPL-1.2"
+authors = ["Markus Mayer <widemeadows@gmail.com>"]
+repository = "https://github.com/sunsided/ballistics"
+keywords = ["kalman-filter", "estimation"]
 
 [dependencies]
 ggez = { version = "0.9.3", default-features = false }

@@ -9,8 +9,9 @@ use minikalman::regular::builder::{
 };
 use rand_distr::Distribution;
 
-const NUM_STATES: usize = 6;
+pub const NUM_STATES: usize = 6;
 const NUM_MEASUREMENTS: usize = 2;
+const MAX_TRAJECTORY_POINTS: usize = 1024;
 
 pub struct Tracker {
     filter: KalmanFilterType<NUM_STATES, f32>,
@@ -203,6 +204,13 @@ impl Tracker {
             while elapsed >= sample_interval {
                 elapsed -= sample_interval;
                 trajectory.push(Vec2::new(x, y));
+                if trajectory.len() >= MAX_TRAJECTORY_POINTS {
+                    break;
+                }
+            }
+
+            if trajectory.len() >= MAX_TRAJECTORY_POINTS {
+                break;
             }
 
             if y <= 0.0 {
@@ -220,6 +228,29 @@ impl Tracker {
         }
     }
 
+    pub fn state_vector(&self) -> [f32; NUM_STATES] {
+        let mut state = [0.0f32; NUM_STATES];
+        self.filter.state_vector().as_matrix().inspect(|m| {
+            for (i, s) in state.iter_mut().enumerate() {
+                *s = m.get(i, 0);
+            }
+        });
+        state
+    }
+
+    pub fn pv_covariance(&self) -> [[f32; 4]; 4] {
+        let mut pv_cov = [[0.0f32; 4]; 4];
+        self.filter.estimate_covariance().as_matrix().inspect(|m| {
+            for (i, row) in pv_cov.iter_mut().enumerate() {
+                for (j, cell) in row.iter_mut().enumerate() {
+                    *cell = m.get(i, j);
+                }
+            }
+        });
+        pv_cov
+    }
+
+    #[allow(dead_code)]
     pub fn predict_impact(
         &self,
         sim_dt: f32,
@@ -229,60 +260,51 @@ impl Tracker {
         if !self.initialized {
             return None;
         }
-
-        let mut state = [0.0f32; NUM_STATES];
-        self.filter.state_vector().as_matrix().inspect(|m| {
-            for (i, s) in state.iter_mut().enumerate() {
-                *s = m.get(i, 0);
-            }
-        });
-
-        // Only sample position and velocity uncertainty.
-        // Acceleration uncertainty grows quadratically with time and dominates
-        // the spread unrealistically. Position/velocity uncertainty is the
-        // well-observable part that gives meaningful impact uncertainty.
-        let mut pv_cov = [[0.0f32; 4]; 4];
-        self.filter.estimate_covariance().as_matrix().inspect(|m| {
-            for (i, row) in pv_cov.iter_mut().enumerate() {
-                for (j, cell) in row.iter_mut().enumerate() {
-                    *cell = m.get(i, j);
-                }
-            }
-        });
-
-        let pv_cholesky = cholesky_decompose_4x4(&pv_cov);
-
-        let mut rng = rand::rng();
-        let normal = rand_distr::Normal::new(0.0, 1.0).unwrap();
-        let mut impacts = Vec::with_capacity(num_samples);
-
-        for _ in 0..num_samples {
-            let sample = sample_pv_trajectory(&state, &pv_cholesky, &mut rng, &normal);
-
-            if let Some(impact_x) = simulate_trajectory(&sample, sim_dt, num_sim_steps) {
-                impacts.push(impact_x);
-            }
-        }
-
-        if impacts.is_empty() {
-            return None;
-        }
-
-        let sum: f32 = impacts.iter().sum();
-        let mean = sum / impacts.len() as f32;
-        let variance: f32 =
-            impacts.iter().map(|x| (x - mean) * (x - mean)).sum::<f32>() / impacts.len() as f32;
-        let std = variance.sqrt();
-        let min_x = impacts.iter().cloned().fold(f32::INFINITY, f32::min);
-        let max_x = impacts.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-
-        Some(ImpactPrediction {
-            mean_x: mean,
-            std_x: std,
-            min_x,
-            max_x,
-        })
+        let state = self.state_vector();
+        let pv_cov = self.pv_covariance();
+        predict_impact_from_state(&state, &pv_cov, sim_dt, num_samples, num_sim_steps)
     }
+}
+
+pub fn predict_impact_from_state(
+    state: &[f32; NUM_STATES],
+    pv_cov: &[[f32; 4]; 4],
+    sim_dt: f32,
+    num_samples: usize,
+    num_sim_steps: usize,
+) -> Option<ImpactPrediction> {
+    let pv_cholesky = cholesky_decompose_4x4(pv_cov);
+
+    let mut rng = rand::rng();
+    let normal = rand_distr::Normal::new(0.0, 1.0).unwrap();
+    let mut impacts = Vec::with_capacity(num_samples);
+
+    for _ in 0..num_samples {
+        let sample = sample_pv_trajectory(state, &pv_cholesky, &mut rng, &normal);
+
+        if let Some(impact_x) = simulate_trajectory(&sample, sim_dt, num_sim_steps) {
+            impacts.push(impact_x);
+        }
+    }
+
+    if impacts.is_empty() {
+        return None;
+    }
+
+    let sum: f32 = impacts.iter().sum();
+    let mean = sum / impacts.len() as f32;
+    let variance: f32 =
+        impacts.iter().map(|x| (x - mean) * (x - mean)).sum::<f32>() / impacts.len() as f32;
+    let std = variance.sqrt();
+    let min_x = impacts.iter().cloned().fold(f32::INFINITY, f32::min);
+    let max_x = impacts.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+
+    Some(ImpactPrediction {
+        mean_x: mean,
+        std_x: std,
+        min_x,
+        max_x,
+    })
 }
 
 fn filter_set_state(
@@ -422,5 +444,35 @@ fn solve_ground_time(y0: f32, vy0: f32, ay: f32, dt: f32) -> f32 {
         t2
     } else {
         dt
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn predicted_trajectory_capped_at_max_points() {
+        let mut tracker = Tracker::new(0.167, 1.0, 25.0);
+        tracker.initialize(Vec2::new(0.0, 100.0));
+        tracker.observe(Vec2::new(10.0, 150.0));
+        tracker.observe(Vec2::new(30.0, 200.0));
+
+        let result = tracker.predicted_trajectory(0.167, 0.01, 10000);
+        assert!(result.is_some());
+        assert!(result.unwrap().len() <= MAX_TRAJECTORY_POINTS);
+    }
+
+    #[test]
+    fn predicted_trajectory_returns_none_when_uninitialized() {
+        let tracker = Tracker::new(0.167, 1.0, 25.0);
+        assert!(tracker.predicted_trajectory(0.167, 0.1, 500).is_none());
+    }
+
+    #[test]
+    fn predicted_trajectory_returns_none_below_ground() {
+        let mut tracker = Tracker::new(0.167, 1.0, 25.0);
+        tracker.initialize(Vec2::new(0.0, -5.0));
+        assert!(tracker.predicted_trajectory(0.167, 0.1, 500).is_none());
     }
 }
