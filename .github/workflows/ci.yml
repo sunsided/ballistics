@@ -95,9 +95,9 @@ jobs:
   dependencies:
     name: Dependency Submission
     runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
       contents: write
-      id-token: write
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -105,8 +105,11 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
       - name: Install cargo-sbom
-        uses: psastras/sbom-rs/actions/install-cargo-sbom@cargo-sbom-latest
+        uses: psastras/sbom-rs/actions/install-cargo-sbom@cargo-sbom-v0.10.0
 
       - name: Generate SBOM
         run: cargo-sbom --output-format=spdx_json_2_3 > sbom.json
