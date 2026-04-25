@@ -12,7 +12,7 @@ A small Rust/ggez playground that tracks a wind-perturbed projectile with a Kalm
 
 - An opponent on the right edge fires projectiles with a random launch angle drawn from Normal(60°, 10°) clamped to 25°–80° and a speed of 100–120 m/s.
 - Gravity (-9.81 m/s²) and a time-correlated wind model (sinusoidal base plus Ornstein–Uhlenbeck-style correlated noise on the x-axis) perturb the flight.
-- The observer receives noisy 2D position measurements each physics tick (uniform noise, σ ≈ 5 px).
+- The observer receives noisy 2D position measurements each physics tick (uniform noise in ±5 px per axis).
 - A 6-state linear Kalman filter with state vector `[x, y, vx, vy, ax, ay]` (constant-acceleration model, dt-based state transition) is built on `minikalman`; the measurement matrix observes position only.
 - Impact prediction runs 64 Monte-Carlo rollouts per update on a background thread: it Cholesky-decomposes the 4×4 position/velocity sub-covariance, draws Gaussian samples, propagates each sample until it crosses the ground (with a quadratic root-solve for the exact crossing time), and aggregates mean, std-dev, min, and max of the landing x to draw the impact zone.
 - Game time is accelerated by `GAME_TIME_FACTOR = 10.0` at `PHYSICS_FPS = 60` for faster iteration.
