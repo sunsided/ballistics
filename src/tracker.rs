@@ -446,3 +446,33 @@ fn solve_ground_time(y0: f32, vy0: f32, ay: f32, dt: f32) -> f32 {
         dt
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn predicted_trajectory_capped_at_max_points() {
+        let mut tracker = Tracker::new(0.167, 1.0, 25.0);
+        tracker.initialize(Vec2::new(0.0, 100.0));
+        tracker.observe(Vec2::new(10.0, 150.0));
+        tracker.observe(Vec2::new(30.0, 200.0));
+
+        let result = tracker.predicted_trajectory(0.167, 0.01, 10000);
+        assert!(result.is_some());
+        assert!(result.unwrap().len() <= MAX_TRAJECTORY_POINTS);
+    }
+
+    #[test]
+    fn predicted_trajectory_returns_none_when_uninitialized() {
+        let tracker = Tracker::new(0.167, 1.0, 25.0);
+        assert!(tracker.predicted_trajectory(0.167, 0.1, 500).is_none());
+    }
+
+    #[test]
+    fn predicted_trajectory_returns_none_below_ground() {
+        let mut tracker = Tracker::new(0.167, 1.0, 25.0);
+        tracker.initialize(Vec2::new(0.0, -5.0));
+        assert!(tracker.predicted_trajectory(0.167, 0.1, 500).is_none());
+    }
+}
