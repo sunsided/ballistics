@@ -161,3 +161,225 @@ impl Iterator for ProjectileSimulator {
         Some(self.projectile.position)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+    use std::f32::consts::FRAC_PI_2;
+
+    const EPS: f32 = 1e-4;
+
+    fn approx_eq(a: f32, b: f32) -> bool {
+        (a - b).abs() < EPS
+    }
+
+    #[test]
+    fn projectile_default_is_zeroed() {
+        let p = Projectile::default();
+        assert_eq!(p.position, Vec2::ZERO);
+        assert_eq!(p.velocity(), 0.0);
+        assert!(approx_eq(p.radius, 5.0));
+        assert!(p.wind.is_none());
+    }
+
+    #[test]
+    fn step_applies_gravity_only_without_wind() {
+        let gravity = Vec2::new(0.0, -9.81);
+        let mut p = Projectile {
+            position: Vec2::new(0.0, 0.0),
+            velocity: Vec2::new(10.0, 0.0),
+            acceleration: Vec2::ZERO,
+            radius: 5.0,
+            wind: None,
+        };
+        let dt = Duration::from_secs_f32(0.5);
+
+        // First step: stored acceleration is still zero, so only horizontal motion
+        p.step(dt, gravity);
+        assert!(approx_eq(p.position.x, 5.0));
+        assert!(approx_eq(p.position.y, 0.0));
+        assert!(approx_eq(p.velocity.x, 10.0));
+        assert!(approx_eq(p.velocity.y, 0.0));
+    }
+
+    #[test]
+    fn step_second_call_uses_stored_gravity() {
+        let gravity = Vec2::new(0.0, -9.81);
+        let mut p = Projectile {
+            position: Vec2::new(0.0, 0.0),
+            velocity: Vec2::new(10.0, 0.0),
+            acceleration: Vec2::ZERO,
+            radius: 5.0,
+            wind: None,
+        };
+        let dt = Duration::from_secs_f32(0.5);
+
+        // First step (acceleration still zero)
+        p.step(dt, gravity);
+        // Second step now uses stored gravity
+        p.step(dt, gravity);
+        // After two steps: v.y = 0 + (-9.81)*0.5 = -4.905
+        assert!(approx_eq(p.velocity.y, -4.905));
+        // Position: p.y = 0 + 0*0.5 + 0.5*(-9.81)*0.25 = -1.22625
+        let expected_y = 0.5 * (-9.81) * 0.25;
+        assert!((p.position.y - expected_y).abs() < 1e-3);
+    }
+
+    #[test]
+    fn velocity_returns_speed_magnitude() {
+        let p = Projectile {
+            velocity: Vec2::new(3.0, 4.0),
+            ..Default::default()
+        };
+        assert!(approx_eq(p.velocity(), 5.0));
+    }
+
+    #[test]
+    fn fire_from_produces_in_range_velocity_and_angle() {
+        let origin = Vec2::new(100.0, 0.0);
+        for _ in 0..300 {
+            let p = Projectile::fire_from(origin);
+            let mag = p.velocity();
+            assert!(mag >= 100.0 && mag <= 120.0, "magnitude {mag} out of range");
+            assert!(p.position == origin);
+            // Upper-left quadrant due to -cos/+sin construction
+            assert!(p.velocity.x <= 0.0, "velocity.x should be <= 0");
+            assert!(p.velocity.y >= 0.0, "velocity.y should be >= 0");
+            let angle = p.velocity.y.atan2(-p.velocity.x).to_degrees();
+            assert!(
+                (25.0..=80.0).contains(&angle),
+                "angle {angle} not in [25, 80]"
+            );
+        }
+    }
+
+    #[test]
+    fn with_wind_sets_wind() {
+        let wind = Wind::new(10.0, 1.0, 0.0, 1.0);
+        let p = Projectile::default().with_wind(wind);
+        assert!(p.wind.is_some());
+    }
+
+    #[test]
+    fn wind_affects_trajectory() {
+        let gravity = Vec2::new(0.0, -9.81);
+        let wind = Wind::new(50.0, 1.0, 0.0, 1.0);
+        let mut p_with_wind = Projectile {
+            position: Vec2::new(0.0, 100.0),
+            velocity: Vec2::new(-10.0, 20.0),
+            acceleration: Vec2::ZERO,
+            radius: 5.0,
+            wind: Some(wind.clone()),
+        };
+        let mut p_no_wind = Projectile {
+            position: Vec2::new(0.0, 100.0),
+            velocity: Vec2::new(-10.0, 20.0),
+            acceleration: Vec2::ZERO,
+            radius: 5.0,
+            wind: None,
+        };
+        let dt = Duration::from_secs_f32(0.1);
+
+        p_with_wind.step(dt, gravity);
+        p_no_wind.step(dt, gravity);
+
+        assert!(
+            (p_with_wind.velocity.x - p_no_wind.velocity.x).abs() > 1e-3,
+            "wind should affect x velocity"
+        );
+    }
+
+    #[test]
+    fn simulate_iterator_strips_wind() {
+        let wind = Wind::new(10.0, 1.0, 0.0, 1.0);
+        let p_with_wind = Projectile::default().with_wind(wind);
+        let p_no_wind = Projectile::default();
+        let gravity = Vec2::new(0.0, -9.81);
+        let delta = Duration::from_secs_f32(0.01);
+        let sample = Duration::from_secs_f32(0.1);
+
+        let samples_with: Vec<_> = p_with_wind
+            .simulate(gravity, delta, sample)
+            .take(3)
+            .collect();
+        let samples_without: Vec<_> = p_no_wind.simulate(gravity, delta, sample).take(3).collect();
+
+        for (a, b) in samples_with.iter().zip(samples_without.iter()) {
+            assert!((a.x - b.x).abs() < 1e-6);
+            assert!((a.y - b.y).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn simulate_iterator_samples_at_interval() {
+        let mut p = Projectile::default();
+        p.velocity = Vec2::new(10.0, 0.0);
+        let gravity = Vec2::new(0.0, 0.0);
+        let delta = Duration::from_secs_f32(0.01);
+        let sample = Duration::from_secs_f32(0.1);
+
+        let samples: Vec<_> = p.simulate(gravity, delta, sample).take(3).collect();
+
+        // At ~0.1s intervals with vx=10, positions should be ~1.0, ~2.0, ~3.0 apart in x.
+        // f32 imprecision (0.01 accumulates to >0.1) may cause one extra step.
+        assert!((samples[0].x - 1.0).abs() < 0.2);
+        assert!((samples[1].x - 2.0).abs() < 0.2);
+        assert!((samples[2].x - 3.0).abs() < 0.2);
+    }
+
+    #[test]
+    fn wind_new_initial_step_is_finite() {
+        let mut wind = Wind::new(5.0, 1.0, 0.0, 1.0);
+        let result = wind.step(0.0);
+        assert!(result.x.is_finite());
+        assert!(result.y == 0.0);
+        // With dt=0 and σ=0, the base is sin(0)=0
+        assert!(approx_eq(result.x, 0.0));
+    }
+
+    #[test]
+    fn wind_step_at_half_period() {
+        let mut wind = Wind::new(5.0, 1.0, 0.0, 1.0);
+        // Step by π to get sin(π) = 0
+        let _ = wind.step(FRAC_PI_2);
+        let _ = wind.step(FRAC_PI_2);
+        let result = wind.step(0.0);
+        // Base component should be sin(π) = 0; noise is 0 (σ=0)
+        assert!((result.x).abs() < 1e-3);
+    }
+
+    #[test]
+    fn wind_reset_zeros_state() {
+        let mut wind = Wind::new(5.0, 1.0, 0.5, 1.0);
+        // Do several stochastic steps
+        for _ in 0..10 {
+            let _ = wind.step(0.1);
+        }
+        wind.reset();
+        // After reset with σ=0, step(0) should return (0,0)
+        let mut wind_det = Wind::new(5.0, 1.0, 0.0, 1.0);
+        wind_det.reset();
+        let result = wind_det.step(0.0);
+        assert!(approx_eq(result.x, 0.0));
+        assert!(approx_eq(result.y, 0.0));
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn fire_from_always_in_upper_left_quadrant(
+            origin_x in -1000.0f32..1000.0,
+            origin_y in -1000.0f32..1000.0,
+        ) {
+            let origin = Vec2::new(origin_x, origin_y);
+            let p = Projectile::fire_from(origin);
+            assert_eq!(p.position, origin);
+            let mag = p.velocity();
+            prop_assert!(mag >= 100.0 && mag <= 120.0, "magnitude {mag} out of range");
+            prop_assert!(p.velocity.x <= 0.0, "velocity.x = {} should be <= 0", p.velocity.x);
+            prop_assert!(p.velocity.y >= 0.0, "velocity.y = {} should be >= 0", p.velocity.y);
+            let angle = p.velocity.y.atan2(-p.velocity.x).to_degrees();
+            prop_assert!((25.0..=80.0).contains(&angle), "angle {angle} not in [25, 80]");
+        }
+    }
+}

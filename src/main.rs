@@ -1,29 +1,21 @@
 mod projectile;
+mod sim;
 mod tracker;
 
 use crate::projectile::{Projectile, Wind};
-use crate::tracker::predict_impact_from_state;
-use crate::tracker::{ImpactPrediction, NUM_STATES, Tracker};
+use crate::sim::{
+    PHYSICS_FPS, PredictionChannel, covariance_ellipse, floor_height_from_offset, physics_dt,
+    projectile_in_bounds, world_to_screen_matrix,
+};
+use crate::tracker::{ImpactPrediction, Tracker};
 use ggez::glam::*;
 use ggez::graphics::{self, Canvas, Color, Drawable, Rect};
 use ggez::winit::dpi::PhysicalSize;
 use ggez::{Context, GameResult};
 use ggez::{GameError, conf, event};
 use rand::RngExt;
-use std::sync::mpsc;
 use std::time::Duration;
 use std::{env, path};
-
-const PHYSICS_FPS: u32 = 60;
-pub(crate) const GAME_TIME_FACTOR: f32 = 10.0;
-
-struct PredictionRequest {
-    state: [f32; NUM_STATES],
-    pv_cov: [[f32; 4]; 4],
-    sim_dt: f32,
-    num_samples: usize,
-    num_sim_steps: usize,
-}
 
 struct MainState {
     window_size: PhysicalSize<u32>,
@@ -41,9 +33,7 @@ struct MainState {
     impact_prediction: Option<ImpactPrediction>,
     filter_trajectory: Option<Vec<Vec2>>,
     frames_since_impact_update: u64,
-    prediction_tx: mpsc::SyncSender<PredictionRequest>,
-    prediction_rx: mpsc::Receiver<Option<ImpactPrediction>>,
-    prediction_pending: bool,
+    prediction_channel: PredictionChannel,
 }
 
 impl MainState {
@@ -53,24 +43,10 @@ impl MainState {
             graphics::FontData::from_path(ctx, "/LiberationMono-Regular.ttf")?,
         );
 
-        let dt = (PHYSICS_FPS as f32).recip() * GAME_TIME_FACTOR;
+        let dt = physics_dt();
         let tracker = Some(Tracker::new(dt, 1.0, 25.0));
         let wind = Wind::new(5.0, 0.5, 2.0, 3.0);
-
-        let (tx, rx): (mpsc::SyncSender<PredictionRequest>, _) = mpsc::sync_channel(1);
-        let (result_tx, result_rx) = mpsc::channel();
-        std::thread::spawn(move || {
-            while let Ok(req) = rx.recv() {
-                let result = predict_impact_from_state(
-                    &req.state,
-                    &req.pv_cov,
-                    req.sim_dt,
-                    req.num_samples,
-                    req.num_sim_steps,
-                );
-                let _ = result_tx.send(result);
-            }
-        });
+        let prediction_channel = PredictionChannel::new();
 
         let s = MainState {
             window_size: ctx.gfx.window().inner_size(),
@@ -87,34 +63,22 @@ impl MainState {
             impact_prediction: None,
             filter_trajectory: None,
             frames_since_impact_update: 0,
-            prediction_tx: tx,
-            prediction_rx: result_rx,
-            prediction_pending: false,
+            prediction_channel,
         };
         Ok(s)
     }
 
     fn floor_height(&self) -> f32 {
-        -self.screen_offset.y
+        floor_height_from_offset(self.screen_offset)
     }
 
     fn create_transformation_matrix(&self) -> Mat3 {
-        let screen_width = self.window_size.width as f32;
-        let screen_height = self.window_size.height as f32;
-
-        let scale_x = screen_width / self.world_size.x * self.screen_scale.x;
-        let scale_y = screen_height / self.world_size.y * self.screen_scale.y;
-
-        // Create a scaling matrix with y-axis flipped and additional scale
-        let scale_matrix = Mat3::from_scale(Vec2::new(scale_x, -scale_y));
-
-        // Create a translation matrix to move the origin to the specified screen offset
-        let translation_matrix = Mat3::from_translation(
-            self.screen_offset + Vec2::new(0.0, screen_height * self.screen_scale.y),
-        );
-
-        // Combine the matrices (scaling first, then translation)
-        translation_matrix * scale_matrix
+        world_to_screen_matrix(
+            self.window_size,
+            self.world_size,
+            self.screen_scale,
+            self.screen_offset,
+        )
     }
 
     fn render_floor(&self, ctx: &mut Context, canvas: &mut Canvas) -> Result<(), GameError> {
@@ -216,11 +180,13 @@ impl MainState {
     }
 
     fn projectile_in_bounds(&self, projectile: Vec2, radius: f32) -> bool {
-        let pos = self.world_to_screen.transform_point2(projectile);
-
-        !(pos.x <= radius
-            || pos.y <= radius
-            || pos.y > (self.window_size.height as f32 - self.floor_height() + radius))
+        projectile_in_bounds(
+            &self.world_to_screen,
+            self.window_size,
+            self.floor_height(),
+            projectile,
+            radius,
+        )
     }
 
     fn update_transformations(&mut self) {
@@ -362,7 +328,7 @@ impl MainState {
     }
 
     fn update_filter_trajectory(&mut self) {
-        let sim_dt = (PHYSICS_FPS as f32).recip() * GAME_TIME_FACTOR;
+        let sim_dt = physics_dt();
         if let Some(tracker) = &self.tracker
             && let Some(t) = tracker.predicted_trajectory(sim_dt, 0.1, 500)
         {
@@ -371,41 +337,31 @@ impl MainState {
     }
 
     fn request_impact_prediction(&mut self) {
-        if self.prediction_pending {
-            return;
-        }
         if let Some(tracker) = &self.tracker
             && tracker.is_initialized()
         {
-            let sim_dt = (PHYSICS_FPS as f32).recip() * GAME_TIME_FACTOR;
-            let request = PredictionRequest {
-                state: tracker.state_vector(),
-                pv_cov: tracker.pv_covariance(),
+            let sim_dt = physics_dt();
+            self.prediction_channel.request(
+                tracker.state_vector(),
+                tracker.pv_covariance(),
                 sim_dt,
-                num_samples: 64,
-                num_sim_steps: 500,
-            };
-            if self.prediction_tx.try_send(request).is_ok() {
-                self.prediction_pending = true;
-            }
+                64,
+                500,
+            );
         }
     }
 
     fn collect_impact_prediction(&mut self) {
-        if let Ok(result) = self.prediction_rx.try_recv() {
-            if let Some(pred) = result {
-                self.impact_prediction = Some(pred);
-            }
-            self.prediction_pending = false;
+        if let Some(pred) = self.prediction_channel.collect() {
+            self.impact_prediction = Some(pred);
         }
     }
 }
 
 impl event::EventHandler<GameError> for MainState {
     fn update(&mut self, ctx: &mut Context) -> GameResult {
-        while ctx.time.check_update_time((PHYSICS_FPS as f32) as u32) {
-            let time_delta =
-                Duration::from_secs_f32((PHYSICS_FPS as f32).recip() * GAME_TIME_FACTOR);
+        while ctx.time.check_update_time(PHYSICS_FPS) {
+            let time_delta = Duration::from_secs_f32(physics_dt());
 
             self.opponent_position = Vec2::new(self.world_size.x * 0.9, 0.0);
 
@@ -429,7 +385,7 @@ impl event::EventHandler<GameError> for MainState {
                 let trajectory: Vec<_> = projectile
                     .simulate(
                         self.gravity,
-                        Duration::from_secs_f32((PHYSICS_FPS as f32).recip() * GAME_TIME_FACTOR),
+                        Duration::from_secs_f32(physics_dt()),
                         Duration::from_secs_f32(0.1),
                     )
                     .take_while(|&pos| self.projectile_in_bounds(pos, 0.0))
@@ -447,13 +403,11 @@ impl event::EventHandler<GameError> for MainState {
                 self.projectile_trajectory = None;
                 self.wind.reset();
                 if let Some(tracker) = self.tracker.as_mut() {
-                    *tracker =
-                        Tracker::new((PHYSICS_FPS as f32).recip() * GAME_TIME_FACTOR, 1.0, 25.0);
+                    *tracker = Tracker::new(physics_dt(), 1.0, 25.0);
                 }
                 self.impact_prediction = None;
                 self.filter_trajectory = None;
-                self.prediction_pending = false;
-                while self.prediction_rx.try_recv().is_ok() {}
+                self.prediction_channel.drain();
             }
         }
 
@@ -528,34 +482,6 @@ impl event::EventHandler<GameError> for MainState {
     }
 }
 
-fn covariance_ellipse(
-    sigma_x: f32,
-    sigma_y: f32,
-    correlation: f32,
-    num_points: usize,
-) -> Vec<Vec2> {
-    let mut points = Vec::with_capacity(num_points + 1);
-    let cov_xy = correlation * sigma_x * sigma_y;
-    let angle = 0.5 * (2.0 * cov_xy).atan2(sigma_x * sigma_x - sigma_y * sigma_y);
-    let lambda1 = 0.5 * (sigma_x * sigma_x + sigma_y * sigma_y)
-        + 0.5 * ((sigma_x * sigma_x - sigma_y * sigma_y).powi(2) + 4.0 * (cov_xy).powi(2)).sqrt();
-    let lambda2 = 0.5 * (sigma_x * sigma_x + sigma_y * sigma_y)
-        - 0.5 * ((sigma_x * sigma_x - sigma_y * sigma_y).powi(2) + 4.0 * (cov_xy).powi(2)).sqrt();
-    let a = lambda1.sqrt().max(1.0);
-    let b = lambda2.sqrt().max(1.0);
-
-    for i in 0..num_points {
-        let theta = (i as f32 / num_points as f32) * 2.0 * std::f32::consts::PI;
-        let x = a * theta.cos();
-        let y = b * theta.sin();
-        let cos_a = angle.cos();
-        let sin_a = angle.sin();
-        points.push(Vec2::new(x * cos_a - y * sin_a, x * sin_a + y * cos_a));
-    }
-    points.push(points[0]);
-    points
-}
-
 pub fn main() -> GameResult {
     let resource_dir = if let Ok(manifest_dir) = env::var("CARGO_MANIFEST_DIR") {
         let mut path = path::PathBuf::from(manifest_dir);
@@ -580,8 +506,6 @@ mod test {
 
     #[test]
     fn equal_scaling_works() {
-        let (tx, _rx) = mpsc::sync_channel(1);
-        let (_result_tx, result_rx) = mpsc::channel();
         let mut s = MainState {
             window_size: PhysicalSize::new(640, 480),
             opponent_position: Vec2::default(),
@@ -597,9 +521,7 @@ mod test {
             impact_prediction: None,
             filter_trajectory: None,
             frames_since_impact_update: 0,
-            prediction_tx: tx,
-            prediction_rx: result_rx,
-            prediction_pending: false,
+            prediction_channel: PredictionChannel::new(),
         };
 
         s.update_transformations();
@@ -615,8 +537,6 @@ mod test {
 
     #[test]
     fn different_scaling_works() {
-        let (tx, _rx) = mpsc::sync_channel(1);
-        let (_result_tx, result_rx) = mpsc::channel();
         let mut s = MainState {
             window_size: PhysicalSize::new(640, 480),
             opponent_position: Vec2::default(),
@@ -632,9 +552,7 @@ mod test {
             impact_prediction: None,
             filter_trajectory: None,
             frames_since_impact_update: 0,
-            prediction_tx: tx,
-            prediction_rx: result_rx,
-            prediction_pending: false,
+            prediction_channel: PredictionChannel::new(),
         };
 
         s.update_transformations();
