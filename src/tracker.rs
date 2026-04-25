@@ -450,6 +450,14 @@ fn solve_ground_time(y0: f32, vy0: f32, ay: f32, dt: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use minikalman::prelude::StateTransitionMatrix;
+    use proptest::prelude::*;
+
+    const EPS: f32 = 1e-4;
+
+    fn approx_eq(a: f32, b: f32) -> bool {
+        (a - b).abs() < EPS
+    }
 
     #[test]
     fn predicted_trajectory_capped_at_max_points() {
@@ -474,5 +482,413 @@ mod tests {
         let mut tracker = Tracker::new(0.167, 1.0, 25.0);
         tracker.initialize(Vec2::new(0.0, -5.0));
         assert!(tracker.predicted_trajectory(0.167, 0.1, 500).is_none());
+    }
+
+    // --- solve_ground_time tests ---
+
+    #[test]
+    fn solve_ground_time_linear_case() {
+        // ay ≈ 0, vy0 < 0, y0 > 0 → expect -y0/vy0 clamped to dt
+        let t = solve_ground_time(100.0, -10.0, 0.0, 20.0);
+        assert!(approx_eq(t, 10.0));
+    }
+
+    #[test]
+    fn solve_ground_time_quadratic_picks_positive_root_in_range() {
+        // y0=10, vy0=0, ay=-9.81 → t = sqrt(2*10/9.81) ≈ 1.43
+        let dt = 5.0;
+        let t = solve_ground_time(10.0, 0.0, -9.81, dt);
+        assert!(t > 0.0 && t <= dt);
+        let y_at_t = 10.0 + 0.0 * t + 0.5 * (-9.81) * t * t;
+        assert!(y_at_t.abs() < 0.01);
+    }
+
+    #[test]
+    fn solve_ground_time_degenerate_zero_velocity_zero_accel() {
+        let t = solve_ground_time(10.0, 0.0, 0.0, 5.0);
+        assert!(approx_eq(t, 0.0));
+    }
+
+    #[test]
+    fn solve_ground_time_no_real_root_returns_dt() {
+        // discriminant < 0: y0>0, vy0=0, ay>0 (accelerating upward)
+        let t = solve_ground_time(10.0, 0.0, 1.0, 5.0);
+        assert!(approx_eq(t, 5.0));
+    }
+
+    // --- Cholesky tests ---
+
+    #[test]
+    fn cholesky_decomposes_identity_to_identity() {
+        let identity = [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ];
+        let l = cholesky_decompose_4x4(&identity);
+        for i in 0..4 {
+            for j in 0..4 {
+                let expected = if i == j { 1.0 } else { 0.0 };
+                assert!((l[i][j] - expected).abs() < 1e-5);
+            }
+        }
+    }
+
+    #[test]
+    fn cholesky_decomposes_known_psd_matrix() {
+        // Build A = L * L^T from a known L
+        let l_orig = [
+            [2.0, 0.0, 0.0, 0.0],
+            [1.0, 3.0, 0.0, 0.0],
+            [0.0, 1.0, 2.0, 0.0],
+            [1.0, 0.0, 1.0, 4.0],
+        ];
+        let mut a = [[0.0f32; 4]; 4];
+        for i in 0..4 {
+            for j in 0..4 {
+                a[i][j] = (0..4).map(|k| l_orig[i][k] * l_orig[j][k]).sum();
+            }
+        }
+        let l = cholesky_decompose_4x4(&a);
+        // Reconstruct and compare
+        for i in 0..4 {
+            for j in 0..4 {
+                let recon: f32 = (0..4).map(|k| l[i][k] * l[j][k]).sum();
+                assert!(
+                    (recon - a[i][j]).abs() < 1e-3,
+                    "reconstruction mismatch at [{i}][{j}]: {recon} vs {a_ij}",
+                    a_ij = a[i][j]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn cholesky_handles_non_psd_gracefully() {
+        // Matrix with negative diagonal entry
+        let bad = [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, -1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ];
+        let l = cholesky_decompose_4x4(&bad);
+        // l[1][1] should be 0 since -1 is negative
+        assert!(approx_eq(l[1][1], 0.0));
+        // No panic should occur
+        assert!(l[0][0] > 0.0);
+    }
+
+    // --- build_state_transition test via Tracker ---
+
+    #[test]
+    fn build_state_transition_matches_kinematics() {
+        let dt = 0.5;
+        let tracker = Tracker::new(dt, 1.0, 1.0);
+        let a = tracker.filter.state_transition().as_matrix();
+        let mut matrix = [[0.0f32; 6]; 6];
+        a.inspect(|m| {
+            for i in 0..6 {
+                for j in 0..6 {
+                    matrix[i][j] = m.get(i, j);
+                }
+            }
+        });
+        let dt2 = 0.5 * dt * dt;
+        assert!(approx_eq(matrix[0][0], 1.0));
+        assert!(approx_eq(matrix[0][2], dt));
+        assert!(approx_eq(matrix[0][4], dt2));
+        assert!(approx_eq(matrix[1][1], 1.0));
+        assert!(approx_eq(matrix[1][3], dt));
+        assert!(approx_eq(matrix[1][5], dt2));
+        assert!(approx_eq(matrix[2][2], 1.0));
+        assert!(approx_eq(matrix[2][4], dt));
+        assert!(approx_eq(matrix[3][3], 1.0));
+        assert!(approx_eq(matrix[3][5], dt));
+        assert!(approx_eq(matrix[4][4], 1.0));
+        assert!(approx_eq(matrix[5][5], 1.0));
+    }
+
+    // --- simulate_trajectory tests ---
+
+    #[test]
+    fn simulate_trajectory_returns_start_x_if_already_underground() {
+        let mut state = [0.0f32; NUM_STATES];
+        state[0] = 42.0;
+        state[1] = -5.0;
+        let result = simulate_trajectory(&state, 0.01, 1000);
+        assert_eq!(result, Some(42.0));
+    }
+
+    #[test]
+    fn simulate_trajectory_hits_ground_symmetric_parabola() {
+        let mut state = [0.0f32; NUM_STATES];
+        state[0] = 0.0;
+        state[1] = 0.001;
+        state[2] = 10.0;
+        state[3] = 10.0;
+        state[5] = -9.81;
+        let result = simulate_trajectory(&state, 0.001, 10000);
+        assert!(result.is_some());
+        let impact = result.unwrap();
+        // Expected ≈ 2*vx*vy/|ay| ≈ 2*10*10/9.81 ≈ 20.387
+        assert!((impact - 20.387).abs() < 0.5);
+    }
+
+    #[test]
+    fn simulate_trajectory_times_out() {
+        let mut state = [0.0f32; NUM_STATES];
+        state[0] = 0.0;
+        state[1] = 100.0;
+        state[2] = 10.0;
+        // ay=0, vy=0 → never falls
+        let result = simulate_trajectory(&state, 0.01, 100);
+        assert!(result.is_none());
+    }
+
+    // --- sample_pv_trajectory test ---
+
+    #[test]
+    fn sample_pv_trajectory_is_identity_with_zero_cholesky() {
+        let state = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let cholesky = [[0.0f32; 4]; 4];
+        let mut rng = rand::rng();
+        let normal = rand_distr::Normal::new(0.0, 1.0).unwrap();
+        let sample = sample_pv_trajectory(&state, &cholesky, &mut rng, &normal);
+        for i in 0..6 {
+            assert!(approx_eq(sample[i], state[i]));
+        }
+    }
+
+    // --- Tracker surface tests ---
+
+    #[test]
+    fn tracker_is_not_initialized_on_construction() {
+        let tracker = Tracker::new(0.1, 1.0, 1.0);
+        assert!(!tracker.is_initialized());
+    }
+
+    #[test]
+    fn initialize_sets_flag() {
+        let mut tracker = Tracker::new(0.1, 1.0, 1.0);
+        tracker.initialize(Vec2::new(0.0, 0.0));
+        assert!(tracker.is_initialized());
+    }
+
+    #[test]
+    fn observe_before_initialize_initializes_from_first_observation() {
+        let mut tracker = Tracker::new(0.1, 1.0, 1.0);
+        tracker.observe(Vec2::new(10.0, 20.0));
+        assert!(tracker.is_initialized());
+        let pos = tracker.estimated_position();
+        assert!(approx_eq(pos.x, 10.0));
+        assert!(approx_eq(pos.y, 20.0));
+        let vel = tracker.estimated_velocity();
+        assert!(approx_eq(vel.x, 0.0));
+        assert!(approx_eq(vel.y, 0.0));
+    }
+
+    #[test]
+    fn observe_updates_position_estimate() {
+        let mut tracker = Tracker::new(0.01, 1.0, 25.0);
+        tracker.initialize(Vec2::new(0.0, 100.0));
+        for _ in 0..20 {
+            tracker.observe(Vec2::new(5.0, 105.0));
+        }
+        let pos = tracker.estimated_position();
+        // Should have moved toward the observation
+        assert!(pos.y > 100.0 && pos.y < 105.0);
+    }
+
+    #[test]
+    fn position_covariance_1sigma_returns_initial_values() {
+        let mut tracker = Tracker::new(0.1, 1.0, 1.0);
+        tracker.initialize(Vec2::new(0.0, 0.0));
+        let (sigma_x, sigma_y, correlation) = tracker.position_covariance_1sigma();
+        assert!(approx_eq(sigma_x, 1.0));
+        assert!(approx_eq(sigma_y, 1.0));
+        assert!(approx_eq(correlation, 0.0));
+    }
+
+    #[test]
+    fn state_vector_and_pv_covariance_round_trip() {
+        let mut tracker = Tracker::new(0.01, 1.0, 25.0);
+        tracker.initialize(Vec2::new(5.0, 10.0));
+        for _ in 0..10 {
+            tracker.observe(Vec2::new(5.5, 10.5));
+        }
+        let state = tracker.state_vector();
+        let pos = tracker.estimated_position();
+        assert!((state[0] - pos.x).abs() < 1e-6);
+        assert!((state[1] - pos.y).abs() < 1e-6);
+
+        let pv_cov = tracker.pv_covariance();
+        let (sigma_x, sigma_y, _) = tracker.position_covariance_1sigma();
+        assert!((pv_cov[0][0].sqrt() - sigma_x).abs() < 1e-6);
+        assert!((pv_cov[1][1].sqrt() - sigma_y).abs() < 1e-6);
+    }
+
+    #[test]
+    fn estimated_velocity_returns_nonzero_when_moving() {
+        let mut tracker = Tracker::new(0.01, 1.0, 25.0);
+        tracker.initialize(Vec2::new(0.0, 0.0));
+        // Drive in a straight line
+        for i in 0..20 {
+            tracker.observe(Vec2::new(i as f32 * 0.1, 0.0));
+        }
+        let vel = tracker.estimated_velocity();
+        assert!(vel.length() > 0.0);
+    }
+
+    #[test]
+    fn predict_impact_returns_none_when_uninitialized() {
+        let tracker = Tracker::new(0.1, 1.0, 1.0);
+        assert!(tracker.predict_impact(0.01, 64, 500).is_none());
+    }
+
+    #[test]
+    fn predict_impact_returns_a_prediction_for_airborne_projectile() {
+        let mut tracker = Tracker::new(0.01, 10.0, 25.0);
+        tracker.initialize(Vec2::new(0.0, 100.0));
+        // Drive observations downward to induce negative velocity estimate
+        for i in 0..20 {
+            let y = 100.0 - (i as f32) * 2.0;
+            tracker.observe(Vec2::new(0.0, y));
+        }
+        let pred = tracker.predict_impact(0.01, 64, 500);
+        assert!(pred.is_some());
+        let pred = pred.unwrap();
+        assert!(pred.mean_x.is_finite());
+        assert!(pred.min_x <= pred.mean_x);
+        assert!(pred.mean_x <= pred.max_x);
+        assert!(pred.std_x >= 0.0);
+    }
+
+    #[test]
+    fn update_matrices_updates_dt() {
+        let mut tracker = Tracker::new(0.1, 1.0, 1.0);
+        let old_a02 = {
+            let a = tracker.filter.state_transition().as_matrix();
+            let mut val = 0.0;
+            a.inspect(|m| val = m.get(0, 2));
+            val
+        };
+        assert!(approx_eq(old_a02, 0.1));
+
+        tracker.update_matrices(0.5);
+        let new_a02 = {
+            let a = tracker.filter.state_transition().as_matrix();
+            let mut val = 0.0;
+            a.inspect(|m| val = m.get(0, 2));
+            val
+        };
+        assert!(approx_eq(new_a02, 0.5));
+    }
+
+    // --- predict_impact_from_state tests ---
+
+    #[test]
+    fn predict_impact_from_state_is_none_when_no_samples_hit_ground() {
+        let mut state = [0.0f32; NUM_STATES];
+        state[0] = 0.0;
+        state[1] = 1000.0; // high y
+        state[2] = 0.0;
+        state[3] = 0.0; // no vertical velocity
+        state[4] = 0.0;
+        state[5] = 0.0; // no gravity
+        let pv_cov = [[0.0f32; 4]; 4];
+        let result = predict_impact_from_state(&state, &pv_cov, 0.01, 64, 100);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn predict_impact_from_state_mean_close_to_deterministic_impact() {
+        let mut state = [0.0f32; NUM_STATES];
+        state[0] = 0.0;
+        state[1] = 10.0;
+        state[2] = 10.0;
+        state[3] = 10.0;
+        state[5] = -9.81;
+        let pv_cov = [[0.0f32; 4]; 4]; // zero covariance
+        let result = predict_impact_from_state(&state, &pv_cov, 0.001, 64, 10000);
+        assert!(result.is_some());
+        let pred = result.unwrap();
+        assert!(pred.std_x < 1e-5);
+        assert!((pred.mean_x - pred.min_x).abs() < 1e-5);
+        assert!((pred.mean_x - pred.max_x).abs() < 1e-5);
+        // Compare with deterministic simulate_trajectory
+        let deterministic = simulate_trajectory(&state, 0.001, 10000).unwrap();
+        assert!((pred.mean_x - deterministic).abs() < 1e-3);
+    }
+
+    // --- proptest property tests ---
+
+    proptest::proptest! {
+        #![proptest_config(ProptestConfig { cases: 128, .. Default::default() })]
+
+        #[test]
+        fn cholesky_roundtrip_psd(
+            entries in prop::collection::vec(-5.0f32..5.0f32, 10),
+        ) {
+            // Build a random lower-triangular L with positive diagonals
+            let mut l = [[0.0f32; 4]; 4];
+            let mut idx = 0;
+            for i in 0..4 {
+                for j in 0..=i {
+                    let val = entries[idx];
+                    idx += 1;
+                    l[i][j] = if i == j { val.abs() + 0.1 } else { val };
+                }
+            }
+            // Form A = L * L^T
+            let mut a = [[0.0f32; 4]; 4];
+            for i in 0..4 {
+                for j in 0..4 {
+                    a[i][j] = (0..4).map(|k| l[i][k] * l[j][k]).sum();
+                }
+            }
+            let l_prime = cholesky_decompose_4x4(&a);
+            // Reconstruct and compare
+            for i in 0..4 {
+                for j in 0..4 {
+                    let recon: f32 = (0..4).map(|k| l_prime[i][k] * l_prime[j][k]).sum();
+                    prop_assert!((recon - a[i][j]).abs() < 1e-3,
+                        "cholesky roundtrip mismatch at [{i}][{j}]: {recon} vs {}", a[i][j]);
+                }
+            }
+        }
+
+        #[test]
+        fn solve_ground_time_in_range(
+            y0 in 0.1f32..100.0,
+            vy0 in -50.0f32..50.0,
+            ay in -20.0f32..-0.1,
+            dt in 0.001f32..1.0,
+        ) {
+            let t = solve_ground_time(y0, vy0, ay, dt);
+            prop_assert!(t >= 0.0 && t <= dt, "t={t} not in [0, {dt}]");
+            let y_at_t = y0 + vy0 * t + 0.5 * ay * t * t;
+            prop_assert!(y_at_t.abs() < 1.0 || (t - dt).abs() < 1e-5,
+                "y_at_t={y_at_t} is not ≈ 0 and t≠dt");
+        }
+
+        #[test]
+        fn simulate_trajectory_impact_x_is_finite(
+            y0 in 0.1f32..100.0,
+            vx in -50.0f32..50.0,
+            vy0 in -50.0f32..50.0,
+            ay in -20.0f32..-0.1,
+        ) {
+            let mut state = [0.0f32; NUM_STATES];
+            state[0] = 0.0;
+            state[1] = y0;
+            state[2] = vx;
+            state[3] = vy0;
+            state[5] = ay;
+            if let Some(impact_x) = simulate_trajectory(&state, 0.01, 10000) {
+                prop_assert!(impact_x.is_finite(), "impact_x={impact_x} is not finite");
+            }
+        }
     }
 }
