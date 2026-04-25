@@ -1,7 +1,7 @@
 mod projectile;
 mod tracker;
 
-use crate::projectile::Projectile;
+use crate::projectile::{Projectile, Wind};
 use crate::tracker::{ImpactPrediction, Tracker};
 use ggez::glam::*;
 use ggez::graphics::{self, Canvas, Color, Drawable, Rect};
@@ -27,6 +27,7 @@ struct MainState {
     screen_offset: Vec2,
     screen_scale: Vec2,
     tracker: Option<Tracker>,
+    wind: Wind,
 }
 
 impl MainState {
@@ -38,6 +39,7 @@ impl MainState {
 
         let dt = (PHYSICS_FPS as f32).recip() * GAME_TIME_FACTOR;
         let tracker = Some(Tracker::new(dt, 1.0, 25.0));
+        let wind = Wind::new(5.0, 0.5, 2.0, 3.0);
 
         let s = MainState {
             window_size: ctx.gfx.window().inner_size(),
@@ -50,6 +52,7 @@ impl MainState {
             screen_offset: Vec2::new(0.0, -100.0),
             screen_scale: Vec2::new(1.0, 1.0),
             tracker,
+            wind,
         };
         Ok(s)
     }
@@ -139,12 +142,39 @@ impl MainState {
                 Vec2::default(),
                 1.0,
                 0.2,
-                Color::new(1.0, 0.0, 0.0, 0.125),
+                Color::new(0.25, 0.35, 0.65, 0.5),
             )?;
 
             for &pos in trajectory {
                 let pos = self.world_to_screen.transform_point2(pos);
                 canvas.draw(&circle, pos);
+            }
+        }
+
+        Ok(())
+    }
+
+    fn render_filter_trajectory(
+        &self,
+        ctx: &mut Context,
+        canvas: &mut Canvas,
+    ) -> Result<(), GameError> {
+        if let Some(tracker) = &self.tracker {
+            let sim_dt = (PHYSICS_FPS as f32).recip() * GAME_TIME_FACTOR;
+            if let Some(trajectory) = tracker.predicted_trajectory(sim_dt, 0.1, 5000) {
+                let circle = graphics::Mesh::new_circle(
+                    ctx,
+                    graphics::DrawMode::fill(),
+                    Vec2::default(),
+                    1.0,
+                    0.2,
+                    Color::new(0.3, 1.0, 0.3, 0.2),
+                )?;
+
+                for pos in trajectory {
+                    let pos = self.world_to_screen.transform_point2(pos);
+                    canvas.draw(&circle, pos);
+                }
             }
         }
 
@@ -206,6 +236,28 @@ impl MainState {
                 self.draw_impact_zone(ctx, canvas, &prediction)?;
             }
         }
+        Ok(())
+    }
+
+    fn render_trajectory_legend(
+        &self,
+        _ctx: &mut Context,
+        canvas: &mut Canvas,
+    ) -> Result<(), GameError> {
+        let mut firing_text = graphics::Text::new(
+            graphics::TextFragment::new("blue = firing trajectory (gravity only)")
+                .color(Color::new(0.35, 0.5, 0.9, 0.9)),
+        );
+        firing_text.set_font("LiberationMono").set_scale(11.);
+        canvas.draw(&firing_text, Vec2::new(10.0, 28.0));
+
+        let mut filter_text = graphics::Text::new(
+            graphics::TextFragment::new("green = filter-predicted trajectory")
+                .color(Color::new(0.3, 1.0, 0.3, 0.7)),
+        );
+        filter_text.set_font("LiberationMono").set_scale(11.);
+        canvas.draw(&filter_text, Vec2::new(10.0, 42.0));
+
         Ok(())
     }
 
@@ -302,7 +354,8 @@ impl event::EventHandler<GameError> for MainState {
                     tracker.observe(noisy_pos);
                 }
             } else {
-                let projectile = Projectile::fire_from(self.opponent_position);
+                let projectile =
+                    Projectile::fire_from(self.opponent_position).with_wind(self.wind.clone());
 
                 let trajectory: Vec<_> = projectile
                     .simulate(
@@ -322,6 +375,7 @@ impl event::EventHandler<GameError> for MainState {
                 if !self.projectile_in_bounds(projectile.position, projectile.radius) {
                     self.projectile = None;
                     self.projectile_trajectory = None;
+                    self.wind.reset();
                     if let Some(tracker) = self.tracker.as_mut() {
                         *tracker = Tracker::new(
                             (PHYSICS_FPS as f32).recip() * GAME_TIME_FACTOR,
@@ -342,7 +396,7 @@ impl event::EventHandler<GameError> for MainState {
         // Text is drawn from the top-left corner.
         let dest_point = Vec2::new(10., 10.);
         canvas.draw(
-            graphics::Text::new("Rawr, rawr never changes") // 🦖
+            graphics::Text::new("Ballistic Kalman Tracker")
                 .set_font("LiberationMono")
                 .set_scale(12.),
             dest_point,
@@ -371,10 +425,12 @@ impl event::EventHandler<GameError> for MainState {
 
         self.render_floor(ctx, &mut canvas)?;
         self.render_projectile_trajectory(ctx, &mut canvas)?;
+        self.render_filter_trajectory(ctx, &mut canvas)?;
         self.render_tracker_estimate(ctx, &mut canvas)?;
         self.render_predicted_impact(ctx, &mut canvas)?;
         self.render_projectile(ctx, &mut canvas)?;
         self.render_opponent(ctx, &mut canvas)?;
+        self.render_trajectory_legend(ctx, &mut canvas)?;
 
         canvas.finish(ctx)?;
         Ok(())
@@ -455,6 +511,7 @@ mod test {
             screen_offset: Vec2::default(),
             screen_scale: Vec2::ONE,
             tracker: None,
+            wind: Wind::new(0.0, 1.0, 0.0, 1.0),
         };
 
         s.update_transformations();
@@ -481,6 +538,7 @@ mod test {
             screen_offset: Vec2::new(1000.0, 2000.0),
             screen_scale: Vec2::ONE,
             tracker: None,
+            wind: Wind::new(0.0, 1.0, 0.0, 1.0),
         };
 
         s.update_transformations();

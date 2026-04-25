@@ -91,6 +91,7 @@ impl Tracker {
         }
     }
 
+    #[allow(dead_code)]
     pub fn update_matrices(&mut self, dt: f32) {
         if dt != self.dt {
             self.dt = dt;
@@ -132,6 +133,7 @@ impl Tracker {
         Vec2::new(x, y)
     }
 
+    #[allow(dead_code)]
     pub fn estimated_velocity(&self) -> Vec2 {
         let state = self.filter.state_vector();
         let vx = state.as_matrix().get(2, 0);
@@ -154,6 +156,70 @@ impl Tracker {
         (sigma_x, sigma_y, correlation)
     }
 
+    pub fn predicted_trajectory(
+        &self,
+        sim_dt: f32,
+        sample_interval: f32,
+        max_steps: usize,
+    ) -> Option<Vec<Vec2>> {
+        if !self.initialized {
+            return None;
+        }
+
+        let mut state = [0.0f32; NUM_STATES];
+        self.filter.state_vector().as_matrix().inspect(|m| {
+            for (i, s) in state.iter_mut().enumerate() {
+                *s = m.get(i, 0);
+            }
+        });
+
+        let mut trajectory = Vec::new();
+        let mut x = state[0];
+        let mut y = state[1];
+        let mut vx = state[2];
+        let mut vy = state[3];
+        let ax = state[4];
+        let ay = state[5];
+        let mut elapsed = 0.0f32;
+
+        if y <= 0.0 {
+            return None;
+        }
+
+        trajectory.push(Vec2::new(x, y));
+
+        for _ in 0..max_steps {
+            let prev_x = x;
+            let prev_y = y;
+            let old_vx = vx;
+            let old_vy = vy;
+
+            x += vx * sim_dt + 0.5 * ax * sim_dt * sim_dt;
+            y += vy * sim_dt + 0.5 * ay * sim_dt * sim_dt;
+            vx += ax * sim_dt;
+            vy += ay * sim_dt;
+            elapsed += sim_dt;
+
+            if elapsed >= sample_interval {
+                elapsed -= sample_interval;
+                trajectory.push(Vec2::new(x, y));
+            }
+
+            if y <= 0.0 {
+                let t_hit = solve_ground_time(prev_y, old_vy, ay, sim_dt);
+                let impact_x = prev_x + old_vx * t_hit + 0.5 * ax * t_hit * t_hit;
+                trajectory.push(Vec2::new(impact_x, 0.0));
+                break;
+            }
+        }
+
+        if trajectory.len() > 1 {
+            Some(trajectory)
+        } else {
+            None
+        }
+    }
+
     pub fn predict_impact(
         &self,
         sim_dt: f32,
@@ -168,14 +234,14 @@ impl Tracker {
         let mut cov = [[0.0f32; NUM_STATES]; NUM_STATES];
 
         self.filter.state_vector().as_matrix().inspect(|m| {
-            for i in 0..NUM_STATES {
-                state[i] = m.get(i, 0);
+            for (i, s) in state.iter_mut().enumerate() {
+                *s = m.get(i, 0);
             }
         });
         self.filter.estimate_covariance().as_matrix().inspect(|m| {
-            for i in 0..NUM_STATES {
-                for j in 0..NUM_STATES {
-                    cov[i][j] = m.get(i, j);
+            for (i, row) in cov.iter_mut().enumerate() {
+                for (j, cell) in row.iter_mut().enumerate() {
+                    *cell = m.get(i, j);
                 }
             }
         });

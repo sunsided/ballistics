@@ -7,11 +7,59 @@ use std::time::Duration;
 const DEG_TO_RAD: f32 = PI / 180.0;
 
 #[derive(Clone)]
+pub struct Wind {
+    time: f32,
+    base_strength: f32,
+    frequency: f32,
+    noise_sigma: f32,
+    prev_noise: f32,
+    correlation: f32,
+}
+
+impl Wind {
+    pub fn new(
+        base_strength: f32,
+        frequency: f32,
+        noise_sigma: f32,
+        correlation_time: f32,
+    ) -> Self {
+        Self {
+            time: 0.0,
+            base_strength,
+            frequency,
+            noise_sigma,
+            prev_noise: 0.0,
+            correlation: (-1.0 / correlation_time).exp(),
+        }
+    }
+
+    pub fn step(&mut self, dt: f32) -> Vec2 {
+        self.time += dt;
+
+        let mut rng = rand::rng();
+        let white_noise: f32 = rng.random_range(-self.noise_sigma..=self.noise_sigma);
+        self.prev_noise = self.correlation * self.prev_noise
+            + (1.0 - self.correlation * self.correlation).sqrt() * white_noise;
+
+        let deterministic = self.base_strength * (self.time * self.frequency).sin();
+        let acceleration_x = deterministic + self.prev_noise;
+
+        Vec2::new(acceleration_x, 0.0)
+    }
+
+    pub fn reset(&mut self) {
+        self.time = 0.0;
+        self.prev_noise = 0.0;
+    }
+}
+
+#[derive(Clone)]
 pub struct Projectile {
     pub radius: f32, // TODO: This is a rendering concern, not a physical property
     pub position: Vec2,
     velocity: Vec2,
     acceleration: Vec2,
+    wind: Option<Wind>,
 }
 
 impl Default for Projectile {
@@ -21,6 +69,7 @@ impl Default for Projectile {
             velocity: Vec2::default(),
             acceleration: Vec2::default(),
             radius: 5.0,
+            wind: None,
         }
     }
 }
@@ -44,8 +93,14 @@ impl Projectile {
             position,
             velocity: Vec2::new(velocity_x, velocity_y),
             acceleration: Vec2::new(0.0, 0.0),
+            wind: None,
             ..Default::default()
         }
+    }
+
+    pub fn with_wind(mut self, wind: Wind) -> Self {
+        self.wind = Some(wind);
+        self
     }
 
     pub fn velocity(&self) -> f32 {
@@ -53,9 +108,17 @@ impl Projectile {
     }
 
     pub fn step(&mut self, duration: Duration, gravity: Vec2) {
-        let duration = duration.as_secs_f32();
-        self.position += self.velocity * duration + 0.5 * self.acceleration * duration.powi(2);
-        self.velocity += self.acceleration * duration;
+        let dt = duration.as_secs_f32();
+
+        let wind_accel = if let Some(wind) = &mut self.wind {
+            wind.step(dt)
+        } else {
+            Vec2::ZERO
+        };
+
+        let total_accel = self.acceleration + wind_accel;
+        self.position += self.velocity * dt + 0.5 * total_accel * dt.powi(2);
+        self.velocity += total_accel * dt;
         self.acceleration = gravity;
     }
 
@@ -65,8 +128,10 @@ impl Projectile {
         delta_time: Duration,
         sample_every: Duration,
     ) -> ProjectileSimulator {
+        let mut projectile = self.clone();
+        projectile.wind = None;
         ProjectileSimulator {
-            projectile: self.clone(),
+            projectile,
             gravity,
             delta_time,
             last_sample: Duration::default(),
