@@ -23,7 +23,7 @@ A small Rust/ggez playground that tracks a wind-perturbed projectile with a Kalm
 cargo run --release
 ```
 
-The `resources/` directory containing `LiberationMono-Regular.ttf` must be present, as `main.rs` adds it as a resource path for text rendering. The font is stored via [Git LFS](https://git-lfs.com/); make sure Git LFS is installed (`git lfs install`) before cloning, or run `git lfs pull` after cloning. Alternatively, clone with `git clone --recursive`.
+The `resources/` directory containing `LiberationMono-Regular.ttf` must be present, as `main.rs` adds it as a resource path for text rendering. The font is stored via [Git LFS](https://git-lfs.com/); make sure Git LFS is installed (`git lfs install`) before cloning, or run `git lfs pull` after cloning.
 
 ## Ideas
 
