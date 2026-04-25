@@ -1,7 +1,7 @@
 # Ballistics Estimation
 
 [![CI](https://github.com/sunsided/ballistics/actions/workflows/ci.yml/badge.svg)](https://github.com/sunsided/ballistics/actions/workflows/ci.yml)
-[![license: EUPL-1.2](https://img.shields.io/badge/license-EUPL--1.2-blue.svg)](https://github.com/sunsided/unit-interval/blob/main/Cargo.toml)
+[![license: EUPL-1.2](https://img.shields.io/badge/license-EUPL--1.2-blue.svg)](https://github.com/sunsided/ballistics)
 
 A Kalman Filter playground with the following idea:
 

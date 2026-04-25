@@ -374,7 +374,9 @@ impl MainState {
         if self.prediction_pending {
             return;
         }
-        if let Some(tracker) = &self.tracker {
+        if let Some(tracker) = &self.tracker
+            && tracker.is_initialized()
+        {
             let sim_dt = (PHYSICS_FPS as f32).recip() * GAME_TIME_FACTOR;
             let request = PredictionRequest {
                 state: tracker.state_vector(),
@@ -451,6 +453,7 @@ impl event::EventHandler<GameError> for MainState {
                 self.impact_prediction = None;
                 self.filter_trajectory = None;
                 self.prediction_pending = false;
+                while self.prediction_rx.try_recv().is_ok() {}
             }
         }
 
