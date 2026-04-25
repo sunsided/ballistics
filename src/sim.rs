@@ -16,6 +16,10 @@ pub fn covariance_ellipse(
     correlation: f32,
     num_points: usize,
 ) -> Vec<Vec2> {
+    debug_assert!(num_points > 0, "num_points must be > 0");
+    if num_points == 0 {
+        return Vec::new();
+    }
     let mut points = Vec::with_capacity(num_points + 1);
     let cov_xy = correlation * sigma_x * sigma_y;
     let angle = 0.5 * (2.0 * cov_xy).atan2(sigma_x * sigma_x - sigma_y * sigma_y);
@@ -145,11 +149,6 @@ impl PredictionChannel {
 
     pub fn is_pending(&self) -> bool {
         self.pending
-    }
-
-    pub fn drain(&mut self) {
-        while self.rx.try_recv().is_ok() {}
-        self.pending = false;
     }
 }
 
@@ -332,16 +331,16 @@ mod tests {
         channel.request(state, [[0.0; 4]; 4], 0.01, 64, 10000);
         assert!(channel.is_pending());
 
-        // Wait for the worker to process and collect
-        let mut result = None;
-        for _ in 0..100 {
-            result = channel.collect();
+        // Wait for the worker to process and collect without sleep-based polling
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while channel.is_pending() {
+            let result = channel.collect();
             if result.is_some() {
                 break;
             }
-            std::thread::sleep(std::time::Duration::from_millis(10));
+            assert!(std::time::Instant::now() < deadline, "prediction timed out");
+            std::thread::yield_now();
         }
-        assert!(result.is_some(), "prediction should have been produced");
         assert!(!channel.is_pending());
     }
 

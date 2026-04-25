@@ -407,7 +407,9 @@ impl event::EventHandler<GameError> for MainState {
                 }
                 self.impact_prediction = None;
                 self.filter_trajectory = None;
-                self.prediction_channel.drain();
+                // Recreate the channel so any in-flight prediction from the
+                // previous run is disconnected and cannot be collected after reset.
+                self.prediction_channel = PredictionChannel::new();
             }
         }
 
