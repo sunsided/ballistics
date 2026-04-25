@@ -33,4 +33,4 @@ The `resources/` directory containing `LiberationMono-Regular.ttf` must be prese
 
 ## License
 
-EUPL-1.2
+Licensed under the [European Union Public Licence v1.2 (EUPL-1.2)](https://joinup.ec.europa.eu/collection/eupl/eupl-text-eupl-12).
