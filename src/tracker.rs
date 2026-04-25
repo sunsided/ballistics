@@ -231,28 +231,31 @@ impl Tracker {
         }
 
         let mut state = [0.0f32; NUM_STATES];
-        let mut cov = [[0.0f32; NUM_STATES]; NUM_STATES];
-
         self.filter.state_vector().as_matrix().inspect(|m| {
             for (i, s) in state.iter_mut().enumerate() {
                 *s = m.get(i, 0);
             }
         });
+
+        // Only sample position and velocity uncertainty.
+        // Acceleration uncertainty grows quadratically with time and dominates
+        // the spread unrealistically. Position/velocity uncertainty is the
+        // well-observable part that gives meaningful impact uncertainty.
+        let mut pv_cov = [[0.0f32; 4]; 4];
         self.filter.estimate_covariance().as_matrix().inspect(|m| {
-            for (i, row) in cov.iter_mut().enumerate() {
+            for (i, row) in pv_cov.iter_mut().enumerate() {
                 for (j, cell) in row.iter_mut().enumerate() {
                     *cell = m.get(i, j);
                 }
             }
         });
 
-        let cholesky = cholesky_decompose(&cov);
+        let pv_cholesky = cholesky_decompose_4x4(&pv_cov);
 
         let mut impacts = Vec::with_capacity(num_samples);
 
         for _ in 0..num_samples {
-            let mut sample = state;
-            apply_cholesky_noise(&mut sample, &cholesky);
+            let sample = sample_pv_trajectory(&state, &pv_cholesky);
 
             if let Some(impact_x) = simulate_trajectory(&sample, sim_dt, num_sim_steps) {
                 impacts.push(impact_x);
@@ -318,9 +321,9 @@ fn build_state_transition(dt: f32, a: &mut impl MatrixMut<6, 6, f32>) {
     a.set(5, 5, 1.0);
 }
 
-fn cholesky_decompose(matrix: &[[f32; NUM_STATES]; NUM_STATES]) -> [[f32; NUM_STATES]; NUM_STATES] {
-    let mut l = [[0.0f32; NUM_STATES]; NUM_STATES];
-    for i in 0..NUM_STATES {
+fn cholesky_decompose_4x4(matrix: &[[f32; 4]; 4]) -> [[f32; 4]; 4] {
+    let mut l = [[0.0f32; 4]; 4];
+    for i in 0..4 {
         for j in 0..=i {
             let sum: f32 = (0..j).map(|k| l[i][k] * l[j][k]).sum();
             if i == j {
@@ -338,18 +341,20 @@ fn cholesky_decompose(matrix: &[[f32; NUM_STATES]; NUM_STATES]) -> [[f32; NUM_ST
     l
 }
 
-fn apply_cholesky_noise(state: &mut [f32; NUM_STATES], cholesky: &[[f32; NUM_STATES]; NUM_STATES]) {
+fn sample_pv_trajectory(state: &[f32; NUM_STATES], cholesky: &[[f32; 4]; 4]) -> [f32; NUM_STATES] {
+    let mut sample = *state;
     let mut rng = rand::rng();
-    let mut z = [0.0f32; NUM_STATES];
+    let mut z = [0.0f32; 4];
     let normal = rand_distr::Normal::new(0.0, 1.0).unwrap();
     for z_i in z.iter_mut() {
         *z_i = normal.sample(&mut rng);
     }
 
-    for i in 0..NUM_STATES {
+    for i in 0..4 {
         let noise: f32 = (0..=i).map(|j| cholesky[i][j] * z[j]).sum();
-        state[i] += noise;
+        sample[i] += noise;
     }
+    sample
 }
 
 fn simulate_trajectory(state: &[f32; NUM_STATES], sim_dt: f32, max_steps: usize) -> Option<f32> {
