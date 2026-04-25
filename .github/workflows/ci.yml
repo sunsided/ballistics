@@ -48,7 +48,7 @@ jobs:
       matrix:
         include:
           - name: default
-            task: test
+            task: test:default-features
           - name: all features
             task: test:all-features
           - name: no default features

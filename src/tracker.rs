@@ -200,7 +200,7 @@ impl Tracker {
             vy += ay * sim_dt;
             elapsed += sim_dt;
 
-            if elapsed >= sample_interval {
+            while elapsed >= sample_interval {
                 elapsed -= sample_interval;
                 trajectory.push(Vec2::new(x, y));
             }
@@ -252,10 +252,12 @@ impl Tracker {
 
         let pv_cholesky = cholesky_decompose_4x4(&pv_cov);
 
+        let mut rng = rand::rng();
+        let normal = rand_distr::Normal::new(0.0, 1.0).unwrap();
         let mut impacts = Vec::with_capacity(num_samples);
 
         for _ in 0..num_samples {
-            let sample = sample_pv_trajectory(&state, &pv_cholesky);
+            let sample = sample_pv_trajectory(&state, &pv_cholesky, &mut rng, &normal);
 
             if let Some(impact_x) = simulate_trajectory(&sample, sim_dt, num_sim_steps) {
                 impacts.push(impact_x);
@@ -341,13 +343,16 @@ fn cholesky_decompose_4x4(matrix: &[[f32; 4]; 4]) -> [[f32; 4]; 4] {
     l
 }
 
-fn sample_pv_trajectory(state: &[f32; NUM_STATES], cholesky: &[[f32; 4]; 4]) -> [f32; NUM_STATES] {
+fn sample_pv_trajectory(
+    state: &[f32; NUM_STATES],
+    cholesky: &[[f32; 4]; 4],
+    rng: &mut impl rand::Rng,
+    normal: &rand_distr::Normal<f32>,
+) -> [f32; NUM_STATES] {
     let mut sample = *state;
-    let mut rng = rand::rng();
     let mut z = [0.0f32; 4];
-    let normal = rand_distr::Normal::new(0.0, 1.0).unwrap();
     for z_i in z.iter_mut() {
-        *z_i = normal.sample(&mut rng);
+        *z_i = normal.sample(rng);
     }
 
     for i in 0..4 {

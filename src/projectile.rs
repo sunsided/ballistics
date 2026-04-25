@@ -13,7 +13,7 @@ pub struct Wind {
     frequency: f32,
     noise_sigma: f32,
     prev_noise: f32,
-    correlation: f32,
+    correlation_time: f32,
 }
 
 impl Wind {
@@ -29,17 +29,18 @@ impl Wind {
             frequency,
             noise_sigma,
             prev_noise: 0.0,
-            correlation: (-1.0 / correlation_time).exp(),
+            correlation_time,
         }
     }
 
     pub fn step(&mut self, dt: f32) -> Vec2 {
         self.time += dt;
 
+        let correlation = (-dt / self.correlation_time).exp();
         let mut rng = rand::rng();
         let white_noise: f32 = rng.random_range(-self.noise_sigma..=self.noise_sigma);
-        self.prev_noise = self.correlation * self.prev_noise
-            + (1.0 - self.correlation * self.correlation).sqrt() * white_noise;
+        self.prev_noise =
+            correlation * self.prev_noise + (1.0 - correlation * correlation).sqrt() * white_noise;
 
         let deterministic = self.base_strength * (self.time * self.frequency).sin();
         let acceleration_x = deterministic + self.prev_noise;

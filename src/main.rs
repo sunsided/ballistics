@@ -28,6 +28,9 @@ struct MainState {
     screen_scale: Vec2,
     tracker: Option<Tracker>,
     wind: Wind,
+    impact_prediction: Option<ImpactPrediction>,
+    filter_trajectory: Option<Vec<Vec2>>,
+    frames_since_impact_update: u64,
 }
 
 impl MainState {
@@ -53,6 +56,9 @@ impl MainState {
             screen_scale: Vec2::new(1.0, 1.0),
             tracker,
             wind,
+            impact_prediction: None,
+            filter_trajectory: None,
+            frames_since_impact_update: 0,
         };
         Ok(s)
     }
@@ -159,22 +165,19 @@ impl MainState {
         ctx: &mut Context,
         canvas: &mut Canvas,
     ) -> Result<(), GameError> {
-        if let Some(tracker) = &self.tracker {
-            let sim_dt = (PHYSICS_FPS as f32).recip() * GAME_TIME_FACTOR;
-            if let Some(trajectory) = tracker.predicted_trajectory(sim_dt, 0.1, 5000) {
-                let circle = graphics::Mesh::new_circle(
-                    ctx,
-                    graphics::DrawMode::fill(),
-                    Vec2::default(),
-                    1.0,
-                    0.2,
-                    Color::new(0.3, 1.0, 0.3, 0.2),
-                )?;
+        if let Some(trajectory) = &self.filter_trajectory {
+            let circle = graphics::Mesh::new_circle(
+                ctx,
+                graphics::DrawMode::fill(),
+                Vec2::default(),
+                1.0,
+                0.2,
+                Color::new(0.3, 1.0, 0.3, 0.2),
+            )?;
 
-                for pos in trajectory {
-                    let pos = self.world_to_screen.transform_point2(pos);
-                    canvas.draw(&circle, pos);
-                }
+            for pos in trajectory {
+                let pos = self.world_to_screen.transform_point2(*pos);
+                canvas.draw(&circle, pos);
             }
         }
 
@@ -229,12 +232,8 @@ impl MainState {
         ctx: &mut Context,
         canvas: &mut Canvas,
     ) -> Result<(), GameError> {
-        if let Some(tracker) = &self.tracker {
-            if let Some(prediction) =
-                tracker.predict_impact((PHYSICS_FPS as f32).recip() * GAME_TIME_FACTOR, 200, 5000)
-            {
-                self.draw_impact_zone(ctx, canvas, &prediction)?;
-            }
+        if let Some(prediction) = &self.impact_prediction {
+            self.draw_impact_zone(ctx, canvas, prediction)?;
         }
         Ok(())
     }
@@ -330,6 +329,18 @@ impl MainState {
 
         Ok(())
     }
+
+    fn update_predictions(&mut self) {
+        let sim_dt = (PHYSICS_FPS as f32).recip() * GAME_TIME_FACTOR;
+        if let Some(tracker) = &self.tracker {
+            self.impact_prediction = tracker
+                .predict_impact(sim_dt, 200, 5000)
+                .or(self.impact_prediction);
+            self.filter_trajectory = tracker
+                .predicted_trajectory(sim_dt, 0.1, 5000)
+                .or(self.filter_trajectory.clone());
+        }
+    }
 }
 
 impl event::EventHandler<GameError> for MainState {
@@ -383,8 +394,18 @@ impl event::EventHandler<GameError> for MainState {
                             25.0,
                         );
                     }
+                    self.impact_prediction = None;
+                    self.filter_trajectory = None;
                 }
             }
+        }
+
+        // Update cached predictions at a lower rate.
+        const IMPACT_UPDATE_INTERVAL: u64 = 10;
+        self.frames_since_impact_update += 1;
+        if self.frames_since_impact_update >= IMPACT_UPDATE_INTERVAL {
+            self.frames_since_impact_update = 0;
+            self.update_predictions();
         }
 
         Ok(())
@@ -512,6 +533,9 @@ mod test {
             screen_scale: Vec2::ONE,
             tracker: None,
             wind: Wind::new(0.0, 1.0, 0.0, 1.0),
+            impact_prediction: None,
+            filter_trajectory: None,
+            frames_since_impact_update: 0,
         };
 
         s.update_transformations();
@@ -539,6 +563,9 @@ mod test {
             screen_scale: Vec2::ONE,
             tracker: None,
             wind: Wind::new(0.0, 1.0, 0.0, 1.0),
+            impact_prediction: None,
+            filter_trajectory: None,
+            frames_since_impact_update: 0,
         };
 
         s.update_transformations();
