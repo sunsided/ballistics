@@ -6,6 +6,7 @@
 A small Rust/ggez playground that tracks a wind-perturbed projectile with a Kalman filter and predicts its impact zone on the ground via Monte-Carlo sampling of the filter's covariance. Acts as a testing ground for the [minikalman](https://github.com/sunsided/minikalman-rs) crate.
 
 ![Screenshot](docs/screenshot.png)
+
 *Blue = true firing trajectory (gravity only), Green = filter-predicted trajectory, Cyan dot + ellipse = state estimate with 1σ covariance, Orange bar + whiskers = predicted impact zone (±2σ with min/max).*
 
 ## What it does
