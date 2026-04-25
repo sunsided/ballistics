@@ -147,6 +147,7 @@ impl PredictionChannel {
         None
     }
 
+    #[allow(dead_code)]
     pub fn is_pending(&self) -> bool {
         self.pending
     }
