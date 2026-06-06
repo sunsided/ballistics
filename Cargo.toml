@@ -9,7 +9,7 @@ repository = "https://github.com/sunsided/ballistics"
 keywords = ["kalman-filter", "estimation"]
 
 [dependencies]
-ggez = { version = "0.9.3", default-features = false }
+ggez = { version = "0.10.0", default-features = false }
 minikalman = { version = "0.7.0", features = ["std"] }
 rand = "0.10.1"
 rand_distr = "0.6.0"
